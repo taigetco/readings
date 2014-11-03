@@ -9,5 +9,7 @@
    <li> Send periodic heartbeats to the namenode</li>
    <li> Handle commands received from the namenode</li>
  </ul>
- 
- 
+ <ul>重要参数
+ <li> `DatanodeProtocolClientSideTranslatorPB bpNamenode`</li>
+ </ul>
+
