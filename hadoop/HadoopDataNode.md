@@ -18,10 +18,23 @@
 
   重要参数
   <ul>
- 	<li> `BPServiceActor bpServiceToActive`, 关联到active NN, 个、如果没有active NN, 它为null, 也是`bpServices`的成员</li>
+    <li> `BPServiceActor bpServiceToActive`, 关联到active NN, 如果没有active NN, 它为null, 也是`bpServices`的成员</li>
     <li> `CopyOnWriteArrayList<BPServiceActor> bpServices` 包含关联到所有NNs的BPServiceActor, active and standy NNs</li>
-    <li> `long lastActiveClaimTxId`, 声称ACTIVE NN最近的transaction ID, 当一个声称ACTIVE的NN发送过一个远低于当前`lastActiveClaimTxId`的transaction ID，就可以断定出现脑裂现象， 参考HDFS-2627
+    <li> `long lastActiveClaimTxId`, 声称ACTIVE NN最近的transaction ID, 当一个声称ACTIVE的NN发送过一个远低于当前lastActiveClaimTxId 的transaction ID，就可以断定出现脑裂现象， 参考HDFS-2627
   </ul>
   
-* `BlockPoolManager`
+* `BlockPoolManager`, 为DN管理BPOfferService对象, Creation, removal, starting, stopping, shutdown on BPOfferService 都必须通过这个类. <br/>
+  重要参数
+  <ul>
+  	<li> `HashMap<String, BPOfferService> bpByNameserviceId`, nameserviceId 和 bp之间的映射</li>
+    <li> `HashMap<String, BPOfferService> bpByBlockPoolId` block pool id 和 bp之间的映射</li>
+    <li> `HashList<BPOfferService> offerServices`
+  </ul>
+
+* `FsVolumeImpl`, volume用来存储replica.
+
+* `FsDatasetAsyncDiskService`, 这个类是多个线程池的容器, 每个线程池对应一个volume, 这样可以容易地安排异步的disk操作. <br/>
+   `HashMap<File, ThreadPoolExecutor> executors` 一个file volume对应一个thread pool
+
+* `FsDatasetImpl implements FsDatasetSpi<FsVolumeImpl>`
 
