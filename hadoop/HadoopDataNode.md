@@ -11,7 +11,7 @@
  </ul>
  重要参数
  <ul>
- <li> `DatanodeProtocolClientSideTranslatorPB bpNamenode`</li>
+   <li> `DatanodeProtocolClientSideTranslatorPB bpNamenode`</li>
  </ul>
  
 * `BPOfferService`, 在DataNode, 对每一个block-pool/namespace创建一个BPOfferService实例对象， 它处理DataNodes和NameNodes之间的heartbeats, 包括active和standby的NameNodes. 它对于每个NameNode，它管理一个BPServiceActor实例. 也维持active NameNodes的状态。<br/>
@@ -26,9 +26,9 @@
 * `BlockPoolManager`, 为DN管理BPOfferService对象, Creation, removal, starting, stopping, shutdown on BPOfferService 都必须通过这个类. <br/>
   重要参数
   <ul>
-  	<li> `HashMap<String, BPOfferService> bpByNameserviceId`, nameserviceId 和 bp之间的映射</li>
+    <li> `HashMap<String, BPOfferService> bpByNameserviceId`, nameserviceId 和 bp之间的映射</li>
     <li> `HashMap<String, BPOfferService> bpByBlockPoolId` block pool id 和 bp之间的映射</li>
-    <li> `HashList<BPOfferService> offerServices`
+    <li> `HashList<BPOfferService> offerServices` </li>
   </ul>
 
 * `FsVolumeImpl`, volume用来存储replica.
@@ -37,4 +37,17 @@
    `HashMap<File, ThreadPoolExecutor> executors` 一个file volume对应一个thread pool
 
 * `FsDatasetImpl implements FsDatasetSpi<FsVolumeImpl>`
+
+* `BlockPoolSliceStorage extends Storage`, 为共享一个block pool id的BlockPoolSlice组管理存储，有几个功能
+<ul>
+  <li> 格式化一个新的block pool 存储</li>
+  <li> 恢复存储状态到一致的状态</li>
+  <li> 在升级期间取得block pool的快照</li>
+  <li> 回滚一个block pool到之前的快照</li>
+  <li> Finalizing block storage by deletion of a snapshot</li>
+</ul>
+
+* `DataStorage extends Storage` <br/>
+ `Collections.synchronizedMap(new HashMap<String, BlockPoolSliceStorage>()) bpStorageMap`
+   
 
