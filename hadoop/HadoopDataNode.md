@@ -31,13 +31,26 @@
     <li> `HashList<BPOfferService> offerServices` </li>
   </ul>
 
-* `FsVolumeImpl`, volume用来存储replica.
-
+* `FsVolumeImpl`, volume用来存储replica. <br/>
+  重要参数
+  <ul>
+    <li> `ConcurrentHashMap<String, BlockPoolSlice> bpSlices`, block pool id 映射一个BlockPoolSlice</li>
+    <li> `DF usage` </li>
+    <li> `ThreadPoolExecutor cacheExecutor`, 每个volume线程池处理block到缓存</li>
+  </ul>
 * `FsDatasetAsyncDiskService`, 这个类是多个线程池的容器, 每个线程池对应一个volume, 这样可以容易地安排异步的disk操作. <br/>
    `HashMap<File, ThreadPoolExecutor> executors` 一个file volume对应一个thread pool
 
-* `FsDatasetImpl implements FsDatasetSpi<FsVolumeImpl>`
-
+* `FsDatasetImpl implements FsDatasetSpi<FsVolumeImpl>`, 管理data blocks集<br/>
+  重要参数
+  <ul>
+    <li> `FsVolumeList volumes`, 包含FsVolumeImpl集</li>
+    <li> `Map<String, DatanodeStorage> storageMap`, storageUuid(Storage directory identifier) 对应一个DatanodeStorage</li>
+    <li> `FsDatasetAsyncDiskService asyncDiskService` </li>
+    <li> `FsDatasetCache cacheManager` </li>
+    <li> `ReplicaMap volumeMap` </li>
+  </ul>
+* `FsDatasetCache`, 为FsDatasetImpl管理缓存, 使用mmap(2) and mlock(2).
 * `BlockPoolSliceStorage extends Storage`, 为共享一个block pool id的BlockPoolSlice组管理存储，有几个功能
 <ul>
   <li> 格式化一个新的block pool 存储</li>
@@ -48,6 +61,4 @@
 </ul>
 
 * `DataStorage extends Storage` <br/>
- `Collections.synchronizedMap(new HashMap<String, BlockPoolSliceStorage>()) bpStorageMap`
-   
-
+ `Collections.synchronizedMap(new HashMap<String, BlockPoolSliceStorage>()) bpStorageMap`, block pool id 和 storage之间的映射
