@@ -114,3 +114,25 @@
   IEndpointSnitch snitch;
   NonBlockingHashMap<Token, ArrayList<InetAddress>> cachedEndpoints;
   ```
+
+### sstable
+
+* `SStable`, 在SequenceFile之上创建这个类，按顺序存放数据，但排序方式取决于application. 一个单独的索引文件将被维护，包含SSTable　keys和在SSTable中的偏移位置. 在SSTable被打开时，每隔indexInterval的key会被读到内存。每个SSTable 为keys保存一份bloom filter文件.
+
+  ```java
+   Descriptor descriptor;
+   Set<Component> components;
+   CFMetaData metadata;
+   IPartitioner partitioner;
+   boolean compression;
+   DecoratedKey first, last;
+  ```
+
+* `SSTableReader extends SSTable`, 通过Keyspace.onStart打开SSTableReaders; 在此之后通过SSTableWriter.renameAndOpen被创建. 不要在存在的SSTable文件上re-call　open()，使用ColumnFamilyStore保存的references来使用.
+
+  ```java
+   SegmentedFile ifile, dfile;
+   IndexSummary indexSummary;
+   IFilter bf;
+   StatsMetadata sstableMetadata;
+  ```
