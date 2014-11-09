@@ -8,6 +8,7 @@
   NonBlockingHashMap<String, Keyspace> keyspaceInstances; //ksName --> Keyspace
   ConcurrentBiMap<Pair<String, String>, UUID> cfIdMap; //Pair<ksName, cfName> --> cfId
   ```
+
 * `KSMataData` <br/>
   ```java
   String name;
