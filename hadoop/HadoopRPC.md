@@ -1,5 +1,40 @@
 ## Hadoop RPC
 
+### 对象概览
+
+* `ConnectionId`, 客户端链接唯一标志符`<remoteAddress, protocol, ticket>`
+
+```java
+InetSocketAddress address; //server地址
+UserGroupInformation ticket;
+Class<?> protocol;
+int rpcTimeout;
+int maxIdleTime; //如果idle时间达到maxIdleTime, connections 将被剔除.
+RetryPolicy connectionRetryPolicy;
+int maxRetriesOnSasl;
+int maxRetriesOnSocketTimeouts;
+boolean tcpNoDelay;
+boolean doPing; //是否需要发送ping消息
+int pingInterval; //发送ping的频率
+```
+
+* `ProtobufRpcEngine.Invoker`
+
+```java
+boolean isClosed = false;
+ConnectionId remoteId;
+Client client
+```
+
+* `Client`, 和`ConnectionId` 一对多关系，Client被缓存在`ClientCache`, 和SocketFactory一一对应
+
+```java
+Hashtable<ConnectionId, Connection> connections;
+Class<? extends Writable> valueClass;
+AtomicBoolean running = new AtomicBoolean(true); //Client是否正在运行
+SocketFactory socketFactory; //如何创建Socket
+int connectionTimeout;
+```
 ###线程概览
 
 ![overview](HadoopRPCThreads.jpg)
@@ -36,7 +71,3 @@
 * IPC Server idle connection scanner（daemon）
  1. 配置参数: IPC_CLIENT_IDLETHRESHOLD_KEY(idleScanThreshold 默认 4000), IPC_CLIENT_CONNECTION_IDLESCANINTERVAL_KEY(idleScanInterval 默认 10s), IPC_CLIENT_CONNECTION_MAXIDLETIME_KEY(maxIdleTime默认20s), IPC_CLIENT_KILL_MAX_KEY(maxIdleToClose 默认 10 close Idel connection最大数量).
  2. 在 connection数量大于 `idleScanThreshold`, Connection.lastContact > `maxIdleTime`, Connection.idIdle == true, 关闭数量`closed` <= `maxIdleToClose`,  执行connection.close .
-
-
-
-
