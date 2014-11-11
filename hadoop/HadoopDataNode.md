@@ -65,3 +65,11 @@
   ```java
   Collections.synchronizedMap(new HashMap<String, BlockPoolSliceStorage>()) bpStorageMap; //block pool id 和 storage之间的映射
   ```
+
+###线程概览
+
+* BPServiceActor thread
+
+　执行流程
+ 
+  
