@@ -86,7 +86,7 @@ this.spanReceiverHost = SpanReceiverHost.getInstance(conf);
 storage = new DataStorage();
 initDataXceiver(conf);
 startInfoServer(conf);
-pauseMonitor = new JvmPauseMonitor(conf);
+pauseMonitor = new JvmPauseMonitor(conf);//参考NameNode
 pauseMonitor.start();
 this.blockPoolTokenSecretManager = new BlockPoolTokenSecretManager();
 initIpcServer(conf);
@@ -105,8 +105,48 @@ saslServer = new SaslDataTransferServer(dnConf, blockPoolTokenSecretManager);
 ```
 
 ###4. 初始化DataStorage
+```java
+private final Map<String, BlockPoolSliceStorage> bpStorageMap
+      = Collections.synchronizedMap(new HashMap<String, BlockPoolSliceStorage>());
+super(NodeType.DATA_NODE);
+//开启trash功能的block pool集合
+trashEnabledBpids = Collections.newSetFromMap(
+    new ConcurrentHashMap<String, Boolean>());
+```
+###5　初始化DataXceiver
+```java
+private void initDataXceiver(Configuration conf) throws IOException {
+    // find free port or use privileged port provided
+    TcpPeerServer tcpPeerServer;
+    if (secureResources != null) {
+      tcpPeerServer = new TcpPeerServer(secureResources);
+    } else {
+      tcpPeerServer = new TcpPeerServer(dnConf.socketWriteTimeout,
+          DataNode.getStreamingAddr(conf));
+    }
+    tcpPeerServer.setReceiveBufferSize(HdfsConstants.DEFAULT_DATA_SOCKET_SIZE);
+    streamingAddr = tcpPeerServer.getStreamingAddr();
+    this.threadGroup = new ThreadGroup("dataXceiverServer");
+    xserver = new DataXceiverServer(tcpPeerServer, conf, this);
+    this.dataXceiverServer = new Daemon(threadGroup, xserver);
+    this.threadGroup.setDaemon(true); // auto destroy when empty
 
-
+    if (conf.getBoolean(DFSConfigKeys.DFS_CLIENT_READ_SHORTCIRCUIT_KEY,
+              DFSConfigKeys.DFS_CLIENT_READ_SHORTCIRCUIT_DEFAULT) ||
+        conf.getBoolean(DFSConfigKeys.DFS_CLIENT_DOMAIN_SOCKET_DATA_TRAFFIC,
+              DFSConfigKeys.DFS_CLIENT_DOMAIN_SOCKET_DATA_TRAFFIC_DEFAULT)) {
+      DomainPeerServer domainPeerServer =
+                getDomainPeerServer(conf, streamingAddr.getPort());
+      if (domainPeerServer != null) {
+        this.localDataXceiverServer = new Daemon(threadGroup,
+            new DataXceiverServer(domainPeerServer, conf, this));
+        LOG.info("Listening on UNIX domain socket: " +
+            domainPeerServer.getBindPath());
+      }
+    }
+    this.shortCircuitRegistry = new ShortCircuitRegistry(conf);
+  }
+```
 
 * `BPServiceActor`, 一个和active or standby namenode建立链接的线程, 用来执行: 
  <ul>
@@ -178,4 +218,4 @@ saslServer = new SaslDataTransferServer(dnConf, blockPoolTokenSecretManager);
 
 　执行流程
  
-  
+ 
