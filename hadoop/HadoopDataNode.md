@@ -1,6 +1,4 @@
-## Hadoop DataNode
-
-### 类设计
+# Hadoop DataNode
 
 DataNode is a class (and program) that stores a set of blocks for a DFS deployment.  A single deployment can have one or many DataNodes. 在HA和Federated环境,每个DataNode会和多个NameNode通信, 而非单个NameNode.  It also communicates with client code and other DataNodes from time to time.
 
@@ -13,8 +11,102 @@ DataNode is a class (and program) that stores a set of blocks for a DFS deployme
  DataNodes spend their lives in an endless loop of asking the NameNode for something to do.  A NameNode cannot connect to a DataNode directly; a NameNode simply returns values from functions invoked by a DataNode.
 
  DataNodes maintain an open server socket so that client code or other DataNodes can read/write data. The host/port for this server is reported to the NameNode, which then sends that information to clients or other DataNodes that might be interested.
- 
-* DataNode
+
+##DataNode 初始化
+
+```java
+// args传入参数 -rollback 或则　-regular
+DataNode datanode = createDataNode(args, null, resources)
+```
+### 1. 基本流程
+```
+Collection<StorageLocation> locations = getStorageLocations(conf);
+检查dataLocations;
+DataNode(conf, locations, resources);
+```
+
+### 2. DataNode构造函数过程
+```java
+volatile boolean shouldRun = true;
+volatile boolean shutdownForUpgrade = false;
+private boolean shutdownInProgress = false;
+private volatile boolean heartbeatsDisabledForTests = false;
+private boolean hasAnyBlockPoolRegistered = false;
+protected final int checkDiskErrorInterval = 5*1000;
+
+this.lastDiskErrorCheck = 0;
+this.maxNumberOfBlocksToLog = conf.getLong(DFS_MAX_NUM_BLOCKS_TO_LOG_KEY,
+        DFS_MAX_NUM_BLOCKS_TO_LOG_DEFAULT);
+this.usersWithLocalPathAccess = Arrays.asList(
+     conf.getTrimmedStrings(DFSConfigKeys.DFS_BLOCK_LOCAL_PATH_ACCESS_USER_KEY));
+this.connectToDnViaHostname = conf.getBoolean(
+     DFSConfigKeys.DFS_DATANODE_USE_DN_HOSTNAME,
+     DFSConfigKeys.DFS_DATANODE_USE_DN_HOSTNAME_DEFAULT);
+this.getHdfsBlockLocationsEnabled = conf.getBoolean(
+     DFSConfigKeys.DFS_HDFS_BLOCKS_METADATA_ENABLED, 
+     DFSConfigKeys.DFS_HDFS_BLOCKS_METADATA_ENABLED_DEFAULT);
+this.supergroup = conf.get(DFSConfigKeys.DFS_PERMISSIONS_SUPERUSERGROUP_KEY,
+     DFSConfigKeys.DFS_PERMISSIONS_SUPERUSERGROUP_DEFAULT);
+this.isPermissionEnabled = conf.getBoolean(
+     DFSConfigKeys.DFS_PERMISSIONS_ENABLED_KEY,
+     DFSConfigKeys.DFS_PERMISSIONS_ENABLED_DEFAULT);
+confVersion = "core-" +
+     conf.get("hadoop.common.configuration.version", "UNSPECIFIED") +
+     ",hdfs-" +
+     conf.get("hadoop.hdfs.configuration.version", "UNSPECIFIED");
+// Determine whether we should try to pass file descriptors to clients.
+if (conf.getBoolean(DFSConfigKeys.DFS_CLIENT_READ_SHORTCIRCUIT_KEY,
+         DFSConfigKeys.DFS_CLIENT_READ_SHORTCIRCUIT_DEFAULT)) {
+   String reason = DomainSocket.getLoadingFailureReason();
+   if (reason != null) {
+       this.fileDescriptorPassingDisabledReason = reason;
+   } else {
+        this.fileDescriptorPassingDisabledReason = null;
+   }
+} else {
+   this.fileDescriptorPassingDisabledReason =
+       "File descriptor passing was not configured.";
+}
+hostName = getHostName(conf);
+startDataNode(conf, dataDirs, resources);
+```
+    1. 从配置文件初始化配置参数
+    2. 执行startDataNode 
+   
+###3. startDataNode执行流程
+
+```java
+this.secureResources = resources;
+this.dataDirs = dataDirs;
+this.conf = conf;
+this.dnConf = new DNConf(conf);//创建DNConf
+checkSecureConfig(dnConf, conf, resources);
+this.spanReceiverHost = SpanReceiverHost.getInstance(conf);
+检查NativeIO, 主要关于Memory Lock 和 Cache
+storage = new DataStorage();
+initDataXceiver(conf);
+startInfoServer(conf);
+pauseMonitor = new JvmPauseMonitor(conf);
+pauseMonitor.start();
+this.blockPoolTokenSecretManager = new BlockPoolTokenSecretManager();
+initIpcServer(conf);
+metrics = DataNodeMetrics.create(conf, getDisplayName());
+metrics.getJvmMetrics().setPauseMonitor(pauseMonitor);
+blockPoolManager = new BlockPoolManager(this);
+blockPoolManager.refreshNamenodes(conf);
+
+// Create the ReadaheadPool from the DataNode context so we can
+// exit without having to explicitly shutdown its thread pool.
+readaheadPool = ReadaheadPool.getInstance();
+saslClient = new SaslDataTransferClient(dnConf.saslPropsResolver,
+dnConf.trustedChannelResolver);
+saslServer = new SaslDataTransferServer(dnConf, blockPoolTokenSecretManager);
+
+```
+
+###4. 初始化DataStorage
+
+
 
 * `BPServiceActor`, 一个和active or standby namenode建立链接的线程, 用来执行: 
  <ul>
