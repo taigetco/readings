@@ -82,9 +82,9 @@ this.conf = conf;
 this.dnConf = new DNConf(conf);//创建DNConf
 checkSecureConfig(dnConf, conf, resources);
 this.spanReceiverHost = SpanReceiverHost.getInstance(conf);
-检查NativeIO, 主要关于Memory Lock 和 Cache
-storage = new DataStorage();
-initDataXceiver(conf);
+检查NativeIO, 主要关于Memory Lock 和 Cache;
+storage = new DataStorage(); //4. 初始化DataStorage
+initDataXceiver(conf);// 5. 初始化DataXceiver
 startInfoServer(conf);
 pauseMonitor = new JvmPauseMonitor(conf);//参考NameNode
 pauseMonitor.start();
@@ -92,9 +92,8 @@ this.blockPoolTokenSecretManager = new BlockPoolTokenSecretManager();
 initIpcServer(conf);
 metrics = DataNodeMetrics.create(conf, getDisplayName());
 metrics.getJvmMetrics().setPauseMonitor(pauseMonitor);
-blockPoolManager = new BlockPoolManager(this);
-blockPoolManager.refreshNamenodes(conf);
-
+blockPoolManager = new BlockPoolManager(this); //6. BlockPoolManager
+blockPoolManager.refreshNamenodes(conf); ////6. BlockPoolManager
 // Create the ReadaheadPool from the DataNode context so we can
 // exit without having to explicitly shutdown its thread pool.
 readaheadPool = ReadaheadPool.getInstance();
@@ -113,7 +112,11 @@ super(NodeType.DATA_NODE);
 trashEnabledBpids = Collections.newSetFromMap(
     new ConcurrentHashMap<String, Boolean>());
 ```
-###5　初始化DataXceiver
+###5. 初始化DataXceiver
+1. 创建TcpPeerServer
+2. 利用TcpPeerServer创建DataXceiverServer
+3. 如果支持unix domain socket, 创建DomainPeerServer 和 domain DataXceiverServer
+
 ```java
 private void initDataXceiver(Configuration conf) throws IOException {
     // find free port or use privileged port provided
@@ -146,6 +149,56 @@ private void initDataXceiver(Configuration conf) throws IOException {
     }
     this.shortCircuitRegistry = new ShortCircuitRegistry(conf);
   }
+```
+### 6. BlockPoolManager
+
+####1. 初始化
+
+```java
+private final Map<String, BPOfferService> bpByNameserviceId =
+    Maps.newHashMap();
+private final Map<String, BPOfferService> bpByBlockPoolId =
+    Maps.newHashMap();
+private final List<BPOfferService> offerServices =
+    Lists.newArrayList();
+//对refreshNamenode加锁
+private final Object refreshNamenodesLock = new Object();
+BlockPoolManager(DataNode dn) {
+    this.dn = dn;
+}
+```
+####2. 执行refreshNamenodes
+```java
+//toAdd 要刷新的name service id
+//addrMap 结构 <nsId, <nnId, addr>>
+for (String nsToAdd : toAdd) {
+   ArrayList<InetSocketAddress> addrs =
+      Lists.newArrayList(addrMap.get(nsToAdd).values());
+   BPOfferService bpos = createBPOS(addrs);
+   bpByNameserviceId.put(nsToAdd, bpos);
+   offerServices.add(bpos);
+}
+startAll();
+```
+
+####3. 创建BPOfferService
+在DataNode, 对每一个block-pool/namespace创建一个BPOfferService实例对象， 它处理DataNodes和NameNodes之间的heartbeats, 包括active和standby的NameNodes. 它对于每个NameNode，它管理一个BPServiceActor实例. 也维持active NameNodes的状态
+```java
+//关联到active NN, 如果没有active NN, 它为null, 也是bpServices的成员
+private BPServiceActor bpServiceToActive = null;
+//包含关联到所有NNs的BPServiceActor, active and standy NNs
+private final List<BPServiceActor> bpServices =
+    new CopyOnWriteArrayList<BPServiceActor>();
+//声称ACTIVE NN最近的transaction ID, 当一个声称ACTIVE的NN发送过一个远低于当前lastActiveClaimTxId 的transaction ID，就可以断定出现脑裂现象， 参考HDFS-2627
+private long lastActiveClaimTxId = -1;
+private final ReentrantReadWriteLock mReadWriteLock =
+    new ReentrantReadWriteLock();
+BPOfferService(List<InetSocketAddress> nnAddrs, DataNode dn) {
+  this.dn = dn;
+  for (InetSocketAddress addr : nnAddrs) {
+    this.bpServices.add(new BPServiceActor(addr, this));
+  }
+}
 ```
 
 * `BPServiceActor`, 一个和active or standby namenode建立链接的线程, 用来执行: 
