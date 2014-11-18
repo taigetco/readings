@@ -93,7 +93,7 @@ initIpcServer(conf);
 metrics = DataNodeMetrics.create(conf, getDisplayName());
 metrics.getJvmMetrics().setPauseMonitor(pauseMonitor);
 blockPoolManager = new BlockPoolManager(this); //6. BlockPoolManager
-blockPoolManager.refreshNamenodes(conf); ////6. BlockPoolManager
+blockPoolManager.refreshNamenodes(conf); //6. BlockPoolManager
 // Create the ReadaheadPool from the DataNode context so we can
 // exit without having to explicitly shutdown its thread pool.
 readaheadPool = ReadaheadPool.getInstance();
@@ -143,8 +143,6 @@ private void initDataXceiver(Configuration conf) throws IOException {
       if (domainPeerServer != null) {
         this.localDataXceiverServer = new Daemon(threadGroup,
             new DataXceiverServer(domainPeerServer, conf, this));
-        LOG.info("Listening on UNIX domain socket: " +
-            domainPeerServer.getBindPath());
       }
     }
     this.shortCircuitRegistry = new ShortCircuitRegistry(conf);
@@ -182,6 +180,28 @@ startAll();
 ```
 
 ####3. 创建BPOfferService
+```java
+protected BPOfferService createBPOS(List<InetSocketAddress> nnAddrs) {
+    return new BPOfferService(nnAddrs, dn);
+}
+```
+####4. 启动BPOfferService
+```java
+void startAll(){
+  UserGroupInformation.getLoginUser().doAs(
+    new PrivilegedExceptionAction<Object>() {
+      @Override
+      public Object run() throws Exception {
+        for (BPOfferService bpos : offerServices) {
+          bpos.start();
+        }
+        return null;
+      }
+    });
+}
+```
+### 7. BPOfferService解析
+####1. 初始化
 在DataNode, 对每一个block-pool/namespace创建一个BPOfferService实例对象， 它处理DataNodes和NameNodes之间的heartbeats, 包括active和standby的NameNodes. 它对于每个NameNode，它管理一个BPServiceActor实例. 也维持active NameNodes的状态
 ```java
 //关联到active NN, 如果没有active NN, 它为null, 也是bpServices的成员
@@ -200,6 +220,48 @@ BPOfferService(List<InetSocketAddress> nnAddrs, DataNode dn) {
   }
 }
 ```
+####2. 创建BPServiceActor
+`new BPServiceActor(addr, this)` //8. BPServiceActor解析
+
+###8. BPServiceActor解析
+和active or standby namenode建立链接的线程, 用来执行: 
+ <ul>
+   <li> Pre-registration handshake with namenode</li>
+   <li> Registration with namenode</li>
+   <li> Send periodic heartbeats to the namenode</li>
+   <li> Handle commands received from the namenode</li>
+ </ul>
+
+BPServiceActor对象的四种状态, 默认CONNECTING
+
+CONNECTING, INIT_FAILED, RUNNING, EXITED, FAILED
+####1. 初始化
+```java
+volatile long lastBlockReport = 0;
+volatile long lastDeletedReport = 0;
+volatile long lastCacheReport = 0;
+private volatile long lastHeartbeat = 0;
+boolean resetBlockReportTime = true;
+volatile long lastCacheReport = 0;
+private volatile RunningState runningState = RunningState.CONNECTING;
+//block reports一个小时一次, 在其期间, DN会增量地报告变化到它的block list. 
+//这个map, key是block ID, 包含没有发送到NN的block list. 
+private final Map<DatanodeStorage, PerStoragePendingIncrementalBR>
+   pendingIncrementalBRperStorage = Maps.newHashMap();
+// IBR = Incremental Block Report. If this flag is set then an IBR will be
+// sent immediately by the actor thread without waiting for the IBR timer
+// to elapse.
+private volatile boolean sendImmediateIBR = false;
+private volatile boolean shouldServiceRun = true;
+
+BPServiceActor(InetSocketAddress nnAddr, BPOfferService bpos) {
+  this.bpos = bpos;
+  this.dn = bpos.getDataNode();
+  this.nnAddr = nnAddr;
+  this.dnConf = dn.getDnConf();
+}
+```
+
 
 * `BPServiceActor`, 一个和active or standby namenode建立链接的线程, 用来执行: 
  <ul>
