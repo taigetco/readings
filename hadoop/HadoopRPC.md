@@ -1,5 +1,6 @@
 ## Hadoop RPC
-
+### RPC procotol
+参考 [RPC Protocol](http://xupeng.sinaapp.com/rpc-clientprotocol/), 写不错
 ### 对象概览
 
 * `ConnectionId`, 客户端链接唯一标志符`<remoteAddress, protocol, ticket>`
