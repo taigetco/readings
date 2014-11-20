@@ -327,10 +327,162 @@ BPServiceActor(InetSocketAddress nnAddr, BPOfferService bpos) {
   Collections.synchronizedMap(new HashMap<String, BlockPoolSliceStorage>()) bpStorageMap; //block pool id 和 storage之间的映射
   ```
 
-###线程概览
+### DirectoryScanner 
 
-* BPServiceActor thread
+####初始化
+传入FsDatasetImpl, 从配置文件得到scan的间隔时间, 需要的工作线程的个数
 
-　执行流程
+```java
+  DirectoryScanner(FsDatasetSpi<?> dataset, Configuration conf) {
+    this.dataset = dataset;
+    int interval = conf.getInt(DFSConfigKeys.DFS_DATANODE_DIRECTORYSCAN_INTERVAL_KEY,
+        DFSConfigKeys.DFS_DATANODE_DIRECTORYSCAN_INTERVAL_DEFAULT);
+    scanPeriodMsecs = interval * 1000L; //msec
+    int threads = 
+        conf.getInt(DFSConfigKeys.DFS_DATANODE_DIRECTORYSCAN_THREADS_KEY,
+                    DFSConfigKeys.DFS_DATANODE_DIRECTORYSCAN_THREADS_DEFAULT);
+
+    reportCompileThreadPool = Executors.newFixedThreadPool(threads, 
+        new Daemon.DaemonFactory());
+    masterThread = new ScheduledThreadPoolExecutor(1,
+        new Daemon.DaemonFactory());
+  }
+```
+
+####执行
+```java
+long offset = DFSUtil.getRandom().nextInt((int) (scanPeriodMsecs/1000L)) * 1000L;
+masterThread.scheduleAtFixedRate(this, offset, scanPeriodMsecs, 
+                                     TimeUnit.MILLISECONDS);
+```
+Master线程主体主要在reconcile方法的执行：
+
+1. 首先扫描硬盘中的block，然后和内存中的block数据做对比, 有差异的block放入diffs中
+2. 然后update 内存中的block.
+
+```java
+void reconcile() throws IOException {
+    scan();
+    for (Entry<String, LinkedList<ScanInfo>> entry : diffs.entrySet()) {
+      String bpid = entry.getKey();
+      LinkedList<ScanInfo> diff = entry.getValue();
+      
+      for (ScanInfo info : diff) {
+        dataset.checkAndUpdate(bpid, info.getBlockId(), info.getBlockFile(),
+            info.getMetaFile(), info.getVolume());
+      }
+    }
+}
+```
+diffs的数据结构 `class ScanInfoPerBlockPool extends HashMap<String, LinkedList<ScanInfo>> `
+
+####扫描
+
+1. 每个volume分配一个工作线程, 扫描每个block pool下面的finalized文件夹下面的block, 每个经过扫面的block存入ScanInfo.
+```java
+public ScanInfoPerBlockPool call() throws Exception {
+      String[] bpList = volume.getBlockPoolList();
+      ScanInfoPerBlockPool result = new ScanInfoPerBlockPool(bpList.length);
+      for (String bpid : bpList) {
+        LinkedList<ScanInfo> report = new LinkedList<ScanInfo>();
+        File bpFinalizedDir = volume.getFinalizedDir(bpid);
+        result.put(bpid, compileReport(volume, bpFinalizedDir, report));
+      }
+      return result;
+ }
+```
+具体扫描片段：
+```java
+private LinkedList<ScanInfo> compileReport(FsVolumeSpi vol, File dir,
+        LinkedList<ScanInfo> report) {
+        File[] files = FileUtil.listFiles(dir);
+        // 这个sort需要说明一下， 可以把每个block排序成blk_<blockid> and meta file
+        // blk_<blockid>_<genstamp>.meta， block在前, meta在后， 可以轻松知道只有meta, 没有block的数据。
+        Arrays.sort(files);
+        //1. 没有block的时候，block file为null
+        report.add(new ScanInfo(blockId, null, files[i], vol));
+        //2. 没有meta file, 不记录
+        //3. 都存在时
+        report.add(new ScanInfo(blockId, blockFile, metaFile, vol));
+ }
+```
+2. 所有的扫描结构存入`ScanInfoPerBlockPool diskReport`中， 和FsDatasetImpl下面的finalized block作弊对
+
+```java
+  synchronized(dataset) {
+      for (Entry<String, ScanInfo[]> entry : diskReport.entrySet()) {
+        String bpid = entry.getKey();
+        ScanInfo[] blockpoolReport = entry.getValue();
+ 
+        LinkedList<ScanInfo> diffRecord = new LinkedList<ScanInfo>();
+        diffs.put(bpid, diffRecord);
+        
+        statsRecord.totalBlocks = blockpoolReport.length;
+        List<FinalizedReplica> bl = dataset.getFinalizedBlocks(bpid);
+        FinalizedReplica[] memReport = bl.toArray(new FinalizedReplica[bl.size()]);
+        Arrays.sort(memReport); // Sort based on blockId
+  
+        int d = 0; // index for blockpoolReport
+        int m = 0; // index for memReprot
+        while (m < memReport.length && d < blockpoolReport.length) {
+          FinalizedReplica memBlock = memReport[Math.min(m, memReport.length - 1)];
+          ScanInfo info = blockpoolReport[Math.min(
+              d, blockpoolReport.length - 1)];
+          if (info.getBlockId() < memBlock.getBlockId()) {
+            // Block is missing in memory
+            addDifference(diffRecord, statsRecord, info);
+            d++;
+            continue;
+          }
+          if (info.getBlockId() > memBlock.getBlockId()) {
+            // Block is missing on the disk
+            addDifference(diffRecord, statsRecord,
+                          memBlock.getBlockId(), info.getVolume());
+            m++;
+            continue;
+          }
+          // Block file and/or metadata file exists on the disk
+          // Block exists in memory
+          if (info.getBlockFile() == null) {
+            // Block metadata file exits and block file is missing
+            addDifference(diffRecord, statsRecord, info);
+          } else if (info.getGenStamp() != memBlock.getGenerationStamp()
+              || info.getBlockFileLength() != memBlock.getNumBytes()) {
+            // Block metadata file is missing or has wrong generation stamp,
+            // or block file length is different than expected
+            statsRecord.mismatchBlocks++;
+            addDifference(diffRecord, statsRecord, info);
+          } else if (info.getBlockFile().compareTo(memBlock.getBlockFile()) != 0) {
+            // volumeMap record and on-disk files don't match.
+            statsRecord.duplicateBlocks++;
+            addDifference(diffRecord, statsRecord, info);
+          }
+          d++;
+
+          if (d < blockpoolReport.length) {
+            // There may be multiple on-disk records for the same block, don't increment
+            // the memory record pointer if so.
+            ScanInfo nextInfo = blockpoolReport[Math.min(d, blockpoolReport.length - 1)];
+            if (nextInfo.getBlockId() != info.blockId) {
+              ++m;
+            }
+          } else {
+            ++m;
+          }
+        }
+        while (m < memReport.length) {
+          FinalizedReplica current = memReport[m++];
+          addDifference(diffRecord, statsRecord,
+                        current.getBlockId(), current.getVolume());
+        }
+        while (d < blockpoolReport.length) {
+          statsRecord.missingMemoryBlocks++;
+          addDifference(diffRecord, statsRecord, blockpoolReport[d++]);
+        }
+        LOG.info(statsRecord.toString());
+      } //end for
+    } //end synchronized
+```
+
  
  
