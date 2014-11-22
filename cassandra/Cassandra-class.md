@@ -1,4 +1,54 @@
-## Cassandra
+# Cassandra
+
+## 启动Cassandra过程
+
+### DatabaseDescritor初始化
+
+读取配置文件, 存储到Config类， 从Config类中读取配置参数, 来初始化部分配置类
+
+重点谈论下DatabaseDescriptor对SystemKeyspace的初始化
+```java
+static void applyConfig(Config config) throws ConfigurationException{
+    // Hardcoded system keyspaces
+    List<KSMetaData> systemKeyspaces = Arrays.asList(KSMetaData.systemKeyspace());
+    assert systemKeyspaces.size() == Schema.systemKeyspaceNames.size();
+    for (KSMetaData ksmd : systemKeyspaces)
+        //把KSMetaData存入keyspaces, CFId(ColumnFamily Id)存入cfIdMap, 方便查找
+        Schema.instance.load(ksmd);
+}
+```
+
+###Load keyspaces 
+所有的keyspaces存储在system.schema_keyspaces ColumnFamily, 整个是一个标准的查询过程，在CassandraDaemon.setup中触发。
+```java
+DatabaseDescriptor.loadSchemas();
+
+/** load keyspace (keyspace) definitions, but do not initialize the keyspace instances. */
+public static void loadSchemas(){
+    Schema.instance.load(DefsTables.loadFromKeyspace());
+    Schema.instance.updateVersion();
+}
+```
+```java
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 ### config
 
@@ -19,7 +69,7 @@
   UTMetaData userTypes;
   ```
 
-* `CFMataData` <br/>
+* `CFMetaData` <br/>
   必需的参数
   ```java
   UUID cfId; //内部id, 不会暴露给用户
