@@ -18,36 +18,170 @@ static void applyConfig(Config config) throws ConfigurationException{
 }
 ```
 
-###Load keyspaces 
-所有的keyspaces存储在system.schema_keyspaces ColumnFamily, 整个是一个标准的查询过程，在CassandraDaemon.setup中触发。
+###Load keyspaces 和 UDFs
+所有的keyspaces存储在system.schema_keyspaces中,ColumnFamily都存储在system.schema_columnfamilies，UTMetaData存储在system.schema_usertypes, UDFs存储在system.schema_functions，在CassandraDaemon.setup中触发。
 ```java
-DatabaseDescriptor.loadSchemas();
-
+void setup(){
+    DatabaseDescriptor.loadSchemas();
+    Functions.loadUDFFromSchema();
+}
 /** load keyspace (keyspace) definitions, but do not initialize the keyspace instances. */
 public static void loadSchemas(){
     Schema.instance.load(DefsTables.loadFromKeyspace());
     Schema.instance.updateVersion();
 }
 ```
-```java
+DefsTables类中全是静态方法，在loadFromKeyspace中主要关注
 
+* ColumnFamilyStore创建及查询，查询具体细节参考查询一章
+
+ 由于创建ColumnFamilyStore是在Keyspace类中执行，需要先初始化Keyspace, 在对每个ColumnFamily创建相应的ColumnFamilyStore
+ 
+ Keyspace类结构
+ ```java
+ //包含当前节点的token/identifier. token将会在节点之间gossip传递, 还维持其他节点负载信息柱状统计图 
+ KSMetaData metadata;
+ OpOrder writeOrder;
+ ConcurrentHashMap<UUID, ColumnFamilyStore> columnFamilyStores; //cfId --> ColumnFamilyStore
+ AbstractReplicationStrategy replicationStrategy;
+ ```
+ 初始化
+ ```java
+ private Keyspace(String keyspaceName, boolean loadSSTables){
+        metadata = Schema.instance.getKSMetaData(keyspaceName);//从schema取出KSMetaData
+        createReplicationStrategy(metadata);//创建ReplicationStrategy
+        this.metric = new KeyspaceMetrics(this);
+        for (CFMetaData cfm : new ArrayList<CFMetaData>(metadata.cfMetaData().values()))
+        {
+            initCf(cfm.cfId, cfm.cfName, loadSSTables);
+        }
+  }
+  //在initCF中创建ColumnFamilyStore
+  columnFamilyStores.putIfAbsent(cfId, ColumnFamilyStore.createColumnFamilyStore(this, cfName, loadSSTables));
+  //在Keyspace.open中对RowCache初始化
+  for (ColumnFamilyStore cfs : keyspaceInstance.getColumnFamilyStores())
+      cfs.initRowCache();
+  ```
+* 对结果的组装
+
+```java
+public static Collection<KSMetaData> loadFromKeyspace(){
+    //执行查询
+    List<Row> serializedSchema = SystemKeyspace.serializedSchema(SystemKeyspace.SCHEMA_KEYSPACES_CF);
+    List<KSMetaData> keyspaces = new ArrayList<>(serializedSchema.size());
+    for (Row row : serializedSchema){
+        if (Schema.invalidSchemaRow(row) || Schema.ignoredSchemaRow(row))
+            continue;
+        //还需要对ColumnFamily, UserType进行查询
+        keyspaces.add(KSMetaData.fromSchema(row, serializedColumnFamilies(row.key), serializedUserTypes(row.key)));
+    }
+    return keyspaces;
+}
+//在KSMetaData中对Row执行反序列化
+public static KSMetaData fromSchema(Row serializedKs, Row serializedCFs, Row serializedUserTypes){
+    Map<String, CFMetaData> cfs = deserializeColumnFamilies(serializedCFs);
+    UTMetaData userTypes = new UTMetaData(UTMetaData.fromSchema(serializedUserTypes));
+    return fromSchema(serializedKs, cfs.values(), userTypes);
+}
+
+//KSMataData结构
+String name;
+Class<? extends AbstractReplicationStrategy> strategyClass;
+Map<String, String> strategyOptions;
+Map<String, CFMetaData> cfMetaData; // cfName --> CFMetaData
+boolean durableWrites; //是否写入Commit log
+UTMetaData userTypes;
+
+//CFMetaData结构, 主要参数
+UUID cfId; //内部id, 不会暴露给用户
+String ksName;
+String cfName;
+ColumnFamilyType cfType; //standard　or super
+CellNameType comparator; // bytes, long, timeuuid, utf8, etc.
 ```
 
+##Cassandra查询过程
+###创建ColumnFamilyStore
+* 创建DataTracker
 
+```java
+//Memtable类
+class Memtable{
+  MemtableAllocator allocator;
+  //the write barrier for directing writes to this memtable during a switch
+  volatile OpOrder.Barrier writeBarrier;
+  ColumnFamilyStore cfs;
+  AtomicLong liveDataSize = new AtomicLong(0);
+  AtomicLong currentOperations = new AtomicLong(0);
+  // We index the memtable by RowPosition only for the purpose of being able
+  // to select key range using Token.KeyBound. However put() ensures that we
+  // actually only store DecoratedKey.
+  ConcurrentNavigableMap<RowPosition, AtomicBTreeColumns> rows = new ConcurrentSkipListMap<>();
+  CellNameType initialComparator;
+  // the last ReplayPosition owned by this Memtable; all ReplayPositions lower are owned by this or an earlier Memtable
+  AtomicReference<ReplayPosition> lastReplayPosition;
+  // the "first" ReplayPosition owned by this Memtable; 
+  // this is inaccurate, and only used as a convenience to prevent CLSM flushing wantonly
+  ReplayPosition minReplayPosition = CommitLog.instance.getContext();
+  public Memtable(ColumnFamilyStore cfs){
+    this.cfs = cfs;
+    this.allocator = MEMORY_POOL.newAllocator();
+    this.initialComparator = cfs.metadata.comparator;
+    this.cfs.scheduleFlush();
+  }
+}
 
+//View类
+/**
+ * An immutable structure holding the current memtable, the memtables pending
+ * flush, the sstables for a column family, and the sstables that are active
+ * in compaction (a subset of the sstables).
+ */
+public static class View
+{
+    /**
+     * ordinarily a list of size 1, but when preparing to flush will contain both the memtable we will flush
+     * and the new replacement memtable, until all outstanding write operations on the old table complete.
+     * The last item in the list is always the "current" memtable.
+     */
+    private final List<Memtable> liveMemtables;
+   　/**
+　    * contains all memtables that are no longer referenced for writing and are queued for / in the process of being
+      * flushed. In chronologically ascending order.
+  　  */
+      private final List<Memtable> flushingMemtables;
+      public final Set<SSTableReader> compacting;
+      public final Set<SSTableReader> sstables;
+      public final SSTableIntervalTree intervalTree;
 
+      View(List<Memtable> liveMemtables, List<Memtable> flushingMemtables, Set<SSTableReader> sstables, Set<SSTableReader> compacting, SSTableIntervalTree intervalTree){
+          this.liveMemtables = liveMemtables;
+          this.flushingMemtables = flushingMemtables;
+          this.sstables = sstables;
+          this.compacting = compacting;
+          this.intervalTree = intervalTree;
+      }
+｝
 
+//DataTracker构造函数
+public DataTracker(ColumnFamilyStore cfstore){
+    this.cfstore = cfstore;
+    this.view = new AtomicReference<>();
+    this.init();
+}
 
+void init()
+{
+    view.set(new View(
+            ImmutableList.of(new Memtable(cfstore)),
+            ImmutableList.<Memtable>of(),
+            Collections.<SSTableReader>emptySet(),
+            Collections.<SSTableReader>emptySet(),
+            SSTableIntervalTree.empty()));
+}
+```
 
-
-
-
-
-
-
-
-
-
+* 初始化SSTableReader
 
 
 ### config
@@ -59,77 +193,9 @@ public static void loadSchemas(){
   ConcurrentBiMap<Pair<String, String>, UUID> cfIdMap; //Pair<ksName, cfName> --> cfId
   ```
 
-* `KSMataData` <br/>
-  ```java
-  String name;
-  Class<? extends AbstractReplicationStrategy> strategyClass;
-  Map<String, String> strategyOptions;
-  Map<String, CFMetaData> cfMetaData; // cfName --> CFMetaData
-  boolean durableWrites; //是否写入Commit log
-  UTMetaData userTypes;
-  ```
 
-* `CFMetaData` <br/>
-  必需的参数
-  ```java
-  UUID cfId; //内部id, 不会暴露给用户
-  String ksName;
-  String cfName;
-  ColumnFamilyType cfType; //standard, super
-  CellNameType comparator; // bytes, long, timeuuid, utf8, etc.
-  ```
 
-### db
 
-* `Keyspace`, 包含当前节点的token/identifier. token将会在节点之间gossip传递。这个class还维持其他节点负载信息柱状统计图<br/>
-  ```java
-  KSMetaData metadata;
-  OpOrder writeOrder;
-  ConcurrentHashMap<UUID, ColumnFamilyStore> columnFamilyStores; //cfId --> ColumnFamilyStore
-  AbstractReplicationStrategy replicationStrategy;
-  ```
-
-* `ColumnFamilyStore`
-
-  ```java
-  OpOrder readOrdering; //track accesses to off-heap memtable storage
-  Keyspace keyspace;
-  String name; //cfName
-  CFMetaData metadata;
-  IPartitioner partitioner;
-  Directories directories;
-  SecondaryIndexManager indexManager;
-  DataTracker data; //为当前的ColumnFamily 管理Memtables and SSTables
-  WrappingCompactionStrategy compactionStrategyWrapper;
-  ```
-* `DataTracker`
-
-   ```java
-   ColumnFamilyStore cfstore;
-   Collection<INotificationConsumer> subscribers
-   AtomicReference<View> view;
-   ```
-
-* `DataTracker.View`, 一个不可变的结构，包含当前的memtable, 等待被flushing的memtables, sstables, 正在compaction的sstables
-
-   ```java
-   List<Memtable> liveMemtables; //通常情况，live memtables 都只有一个， 在flushing时， 有两个memtables, 其中一个即将被flushing
-   List<Memtable> flushingMemtables; //包含所有不在被写的memtables, 会被排队等待被flush
-   Set<SSTableReader> compacting; //是sstables的子集
-   Set<SSTableReader> sstables;
-   SSTableIntervalTree intervalTree;
-   ```
-
-* `Memtable`
-
-  ```java
-  MemtableAllocator allocator;
-  ColumnFamilyStore cfs;
-  ConcurrentSkipListMap<RowPosition, AtomicBTreeColumns> rows; //为了使用Token.KeyBound查询key range, 通过RowPosition来索引memtable. put() 方法只需要存储DecoratedKey
-  CellNameType initialComparator = cfs.metadata.comparator;
-  AtomicReference<ReplayPosition> lastReplayPosition; //被当前memtable拥有最新的ReplayPosition, 所有低于此ReplayPosition被包含在当前的或者早期的memtable
-  ReplayPosition minReplayPosition = CommitLog.instance.getContext(); //Memtable包含的第一个ReplayPosition, 不够精确
-  ```
 
 ### service
 
