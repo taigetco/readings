@@ -183,6 +183,45 @@ void init()
 
 * 初始化SSTableReader
 
+ 从Directories中得到文件，按照`Set<Map.Entry<Descriptor, Set<Component>>>`存放, 对每个Descriptor对应的Set<Component>打开一个线程来创建SStableReader.
+ 
+ Descriptor结构
+ 
+ ![Descriptor](images/descriptor_object.png)
+ 
+ 数据文件类型
+ 
+ ![data files](images/data_file_list.jpg)
+
+  ```java
+  private static SSTableReader open(Descriptor descriptor,
+                                      Set<Component> components,
+                                      CFMetaData metadata,
+                                      IPartitioner partitioner,
+                                      boolean validate) throws IOException{
+      //从Statistics.db中读取validation和stats信息                                
+      Map<MetadataType, MetadataComponent> sstableMetadata = descriptor.getMetadataSerializer().deserialize(descriptor,
+                EnumSet.of(MetadataType.VALIDATION, MetadataType.STATS));
+      ValidationMetadata validationMetadata = (ValidationMetadata) sstableMetadata.get(MetadataType.VALIDATION);
+        StatsMetadata statsMetadata = (StatsMetadata) sstableMetadata.get(MetadataType.STATS);
+      // Check if sstable is created using same partitioner.
+      // Partitioner can be null, which indicates older version of sstable or no stats available.
+      // In that case, we skip the check.
+      String partitionerName = partitioner.getClass().getCanonicalName();
+      if (validationMetadata != null && !partitionerName.equals(validationMetadata.partitioner)){
+            System.exit(1);
+      }
+      SSTableReader sstable = internalOpen(descriptor, components, metadata, partitioner, System.currentTimeMillis(), statsMetadata, OpenReason.NORMAL);
+      // load index and filter
+      long start = System.nanoTime();
+      sstable.load(validationMetadata);
+      if (validate)
+          sstable.validate();
+      return sstable;
+  }
+```
+
+
 
 ### config
 
