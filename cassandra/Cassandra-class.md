@@ -187,7 +187,7 @@ void init()
  
  Descriptor结构
  
- ![Descriptor](images/descriptor_object.png)
+ ![Descriptor](images/descriptor_object.jpg)
  
  数据文件类型
  
