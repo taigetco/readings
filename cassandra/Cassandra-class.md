@@ -187,11 +187,11 @@ void init()
  
  Descriptor结构
  
- ![Descriptor](images/descriptor_object.jpg)
+ ![Descriptor](images/descriptor_object.png)
  
  数据文件类型
  
- ![data files](images/data_file_list.jpg)
+ ![data files](images/data_file_list.png)
 
   ```java
   private static SSTableReader open(Descriptor descriptor,
