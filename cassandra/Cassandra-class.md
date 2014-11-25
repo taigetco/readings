@@ -219,7 +219,136 @@ void init()
           sstable.validate();
       return sstable;
   }
-```
+ ```
+
+ 装载index和filter, 1.从Summary.db读取IndexSumary.
+
+ ```java
+ /**
+  * Loads ifile, dfile and indexSummary, and optionally recreates the bloom filter.
+  * @param saveSummaryIfCreated for bulk loading purposes, if the summary was absent and needed to be built, you can avoid persisting it to disk by setting this to false
+  */
+  private void load(boolean recreateBloomFilter, boolean saveSummaryIfCreated) throws IOException
+  {
+      SegmentedFile.Builder ibuilder = SegmentedFile.getBuilder(DatabaseDescriptor.getIndexAccessMode());
+      SegmentedFile.Builder dbuilder = compression
+                ? SegmentedFile.getCompressedBuilder()
+                : SegmentedFile.getBuilder(DatabaseDescriptor.getDiskAccessMode());
+      boolean summaryLoaded = loadSummary(ibuilder, dbuilder);
+      if (recreateBloomFilter || !summaryLoaded)
+          buildSummary(recreateBloomFilter, ibuilder, dbuilder, summaryLoaded, Downsampling.BASE_SAMPLING_LEVEL);
+        ifile = ibuilder.complete(descriptor.filenameFor(Component.PRIMARY_INDEX));
+        dfile = dbuilder.complete(descriptor.filenameFor(Component.DATA));
+        if (saveSummaryIfCreated && (recreateBloomFilter || !summaryLoaded))
+            // save summary information to disk
+            saveSummary(ibuilder, dbuilder);
+    }
+ ```
+ 
+ IndexSumary 结构与解释
+ 
+ Layout of Memory for index summaries:
+ 1. A "header" containing the offset into `bytes` of entries in the summary summary data, consisting of one four byte position for each entry in the summary.  This allows us do simple math in getIndex() to find the position in the Memory to start reading the actual index summary entry.  (This is necessary because keys can have different lengths.)
+ 2.  A sequence of (DecoratedKey, position) pairs, where position is the offset into the actual index file.
+
+ `RefCountedMemory` 将IndexSummary存储在offheap, 每个entry四字节
+ 
+ ![IndexSumary](images/IndexSummary.png)
+ 
+ ```java
+ //Load index summary from Summary.db file if it exists.
+ //if loaded index summary has different index interval from current value stored in schema,
+ //then Summary.db file will be deleted and this returns false to rebuild summary.
+ public boolean loadSummary(SegmentedFile.Builder ibuilder, SegmentedFile.Builder dbuilder){
+   File summariesFile = new File(descriptor.filenameFor(Component.SUMMARY));
+   DataInputStream iStream = new DataInputStream(new FileInputStream(summariesFile));
+   indexSummary = IndexSummary.serializer.deserialize(iStream, partitioner, descriptor.version.hasSamplingLevel(), metadata.getMinIndexInterval(), metadata.getMaxIndexInterval());
+   first = partitioner.decorateKey(ByteBufferUtil.readWithLength(iStream));
+   last = partitioner.decorateKey(ByteBufferUtil.readWithLength(iStream));
+   ibuilder.deserializeBounds(iStream);
+   dbuilder.deserializeBounds(iStream);
+ }
+ 
+ //Build index summary(and optionally bloom filter) by reading through Index.db file.    
+private void buildSummary(boolean recreateBloomFilter, SegmentedFile.Builder ibuilder, SegmentedFile.Builder dbuilder, boolean summaryLoaded, int samplingLevel) throws IOException{
+    // we read the positions in a BRAF 
+    //so we don't have to worry about an entry spanning a mmap boundary.
+    RandomAccessReader primaryIndex = RandomAccessReader.open(new File(descriptor.filenameFor(Component.PRIMARY_INDEX)));
+    try
+    {
+        long indexSize = primaryIndex.length();
+        long histogramCount = sstableMetadata.estimatedRowSize.count();
+        long estimatedKeys = histogramCount > 0 && !sstableMetadata.estimatedRowSize.isOverflowed()
+                ? histogramCount
+                : estimateRowsFromIndex(primaryIndex);
+        if (recreateBloomFilter)
+            bf = FilterFactory.getFilter(estimatedKeys, metadata.getBloomFilterFpChance(), true);
+        IndexSummaryBuilder summaryBuilder = null;
+        if (!summaryLoaded)
+            summaryBuilder = new IndexSummaryBuilder(estimatedKeys, metadata.getMinIndexInterval(), samplingLevel);
+        long indexPosition;
+        RowIndexEntry.IndexSerializer rowIndexSerializer = descriptor.getFormat().getIndexSerializer(metadata);
+        while ((indexPosition = primaryIndex.getFilePointer()) != indexSize)
+        {
+            ByteBuffer key = ByteBufferUtil.readWithShortLength(primaryIndex);
+            //顺序读取每个RowIndexEntry
+            RowIndexEntry indexEntry = rowIndexSerializer.deserialize(primaryIndex, descriptor.version);
+            DecoratedKey decoratedKey = partitioner.decorateKey(key);
+            if (first == null)
+                first = decoratedKey;
+            last = decoratedKey;
+            if (recreateBloomFilter)
+                bf.add(decoratedKey.getKey());
+            // if summary was already read from disk we don't want to re-populate it using primary index
+            if (!summaryLoaded)
+            {
+                //按照minIndexInterval间隔存放index key, 这些key在IndexSummary存放在offheap
+                summaryBuilder.maybeAddEntry(decoratedKey, indexPosition);
+                ibuilder.addPotentialBoundary(indexPosition);
+                //position就是RowIndex指向Data.db的位置, Entry的开始位置
+                dbuilder.addPotentialBoundary(indexEntry.position);
+            }
+        }
+        if (!summaryLoaded)
+            indexSummary = summaryBuilder.build(partitioner);
+    }finally{
+        FileUtils.closeQuietly(primaryIndex);
+    }
+    first = getMinimalKey(first);
+    last = getMinimalKey(last);
+ }
+ 
+ //IndexSummaryBuilder中的maybeAddEntry, //TODO startPoints作用
+ public IndexSummaryBuilder maybeAddEntry(DecoratedKey decoratedKey, long indexPosition)
+ {
+    if (keysWritten % minIndexInterval == 0)
+    {
+        // see if we should skip this key based on our sampling level
+        boolean shouldSkip = false;
+        for (int start : startPoints)
+        {
+            if ((indexIntervalMatches - start) % BASE_SAMPLING_LEVEL == 0)
+            {
+                shouldSkip = true;
+                break;
+            }
+        }
+        if (!shouldSkip)
+        {
+            keys.add(getMinimalKey(decoratedKey));
+            offheapSize += decoratedKey.getKey().remaining();
+            positions.add(indexPosition);
+            offheapSize += TypeSizes.NATIVE.sizeof(indexPosition);
+        }
+        indexIntervalMatches++;
+    }
+    keysWritten++;
+    return this;
+ }
+ ```
+
+
+
 
 
 
