@@ -261,13 +261,13 @@ void init()
  //if loaded index summary has different index interval from current value stored in schema,
  //then Summary.db file will be deleted and this returns false to rebuild summary.
  public boolean loadSummary(SegmentedFile.Builder ibuilder, SegmentedFile.Builder dbuilder){
-   File summariesFile = new File(descriptor.filenameFor(Component.SUMMARY));
-   DataInputStream iStream = new DataInputStream(new FileInputStream(summariesFile));
-   indexSummary = IndexSummary.serializer.deserialize(iStream, partitioner, descriptor.version.hasSamplingLevel(), metadata.getMinIndexInterval(), metadata.getMaxIndexInterval());
-   first = partitioner.decorateKey(ByteBufferUtil.readWithLength(iStream));
-   last = partitioner.decorateKey(ByteBufferUtil.readWithLength(iStream));
-   ibuilder.deserializeBounds(iStream);
-   dbuilder.deserializeBounds(iStream);
+     File summariesFile = new File(descriptor.filenameFor(Component.SUMMARY));
+     DataInputStream iStream = new DataInputStream(new FileInputStream(summariesFile));
+     indexSummary = IndexSummary.serializer.deserialize(iStream, partitioner, descriptor.version.hasSamplingLevel(), metadata.getMinIndexInterval(), metadata.getMaxIndexInterval());
+     first = partitioner.decorateKey(ByteBufferUtil.readWithLength(iStream));
+     last = partitioner.decorateKey(ByteBufferUtil.readWithLength(iStream));
+     ibuilder.deserializeBounds(iStream);
+     dbuilder.deserializeBounds(iStream);
  }
  ```
  创建IndexSummary
