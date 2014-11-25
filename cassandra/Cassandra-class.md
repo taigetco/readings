@@ -221,7 +221,7 @@ void init()
   }
  ```
 
- 装载index和filter, 1.从Summary.db读取IndexSumary.
+ 装载index和filter, 1.从Summary.db读取IndexSumary, 将index entry position和data entry position分别读到ifile和dfile. 2. 如果Summary.db load失败, 创建IndexSummary. 3. 把创建的IndexSummary保存到Summary.db
 
  ```java
  /**
@@ -251,10 +251,11 @@ void init()
  1. A "header" containing the offset into `bytes` of entries in the summary summary data, consisting of one four byte position for each entry in the summary.  This allows us do simple math in getIndex() to find the position in the Memory to start reading the actual index summary entry.  (This is necessary because keys can have different lengths.)
  2.  A sequence of (DecoratedKey, position) pairs, where position is the offset into the actual index file.
 
- `RefCountedMemory` 将IndexSummary存储在offheap, 每个entry四字节
+ `RefCountedMemory` 将index key 和 index position(指向Index.db的位置)存储在offheap
  
  ![IndexSumary](images/IndexSummary.png)
  
+ 装载IndexSummary
  ```java
  //Load index summary from Summary.db file if it exists.
  //if loaded index summary has different index interval from current value stored in schema,
@@ -268,9 +269,11 @@ void init()
    ibuilder.deserializeBounds(iStream);
    dbuilder.deserializeBounds(iStream);
  }
- 
+ ```
+ 创建IndexSummary
+ ```java
  //Build index summary(and optionally bloom filter) by reading through Index.db file.    
-private void buildSummary(boolean recreateBloomFilter, SegmentedFile.Builder ibuilder, SegmentedFile.Builder dbuilder, boolean summaryLoaded, int samplingLevel) throws IOException{
+ private void buildSummary(boolean recreateBloomFilter, SegmentedFile.Builder ibuilder, SegmentedFile.Builder dbuilder, boolean summaryLoaded, int samplingLevel) throws IOException{
     // we read the positions in a BRAF 
     //so we don't have to worry about an entry spanning a mmap boundary.
     RandomAccessReader primaryIndex = RandomAccessReader.open(new File(descriptor.filenameFor(Component.PRIMARY_INDEX)));
@@ -282,6 +285,7 @@ private void buildSummary(boolean recreateBloomFilter, SegmentedFile.Builder ibu
                 ? histogramCount
                 : estimateRowsFromIndex(primaryIndex);
         if (recreateBloomFilter)
+            //创建bloom filter
             bf = FilterFactory.getFilter(estimatedKeys, metadata.getBloomFilterFpChance(), true);
         IndexSummaryBuilder summaryBuilder = null;
         if (!summaryLoaded)
@@ -298,6 +302,7 @@ private void buildSummary(boolean recreateBloomFilter, SegmentedFile.Builder ibu
                 first = decoratedKey;
             last = decoratedKey;
             if (recreateBloomFilter)
+                //加入bloom filter
                 bf.add(decoratedKey.getKey());
             // if summary was already read from disk we don't want to re-populate it using primary index
             if (!summaryLoaded)
@@ -336,8 +341,10 @@ private void buildSummary(boolean recreateBloomFilter, SegmentedFile.Builder ibu
         if (!shouldSkip)
         {
             keys.add(getMinimalKey(decoratedKey));
+            //加入offheap
             offheapSize += decoratedKey.getKey().remaining();
             positions.add(indexPosition);
+            //加入offheap
             offheapSize += TypeSizes.NATIVE.sizeof(indexPosition);
         }
         indexIntervalMatches++;
@@ -346,6 +353,8 @@ private void buildSummary(boolean recreateBloomFilter, SegmentedFile.Builder ibu
     return this;
  }
  ```
+ 
+ 对bloom filter实现说明
 
 
 
