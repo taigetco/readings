@@ -6,16 +6,23 @@
 
 读取cassandra.yaml配置文件, 存储到Config类， 从Config类中读取配置参数, 来初始化部分配置类
 
-重点谈论下DatabaseDescriptor对SystemKeyspace的初始化
+重点谈论下DatabaseDescriptor对SystemKeyspace的初始化, System Keyspace是写死在KSMetaData中
 ```java
 static void applyConfig(Config config) throws ConfigurationException{
-    // Hardcoded system keyspaces
     List<KSMetaData> systemKeyspaces = Arrays.asList(KSMetaData.systemKeyspace());
     assert systemKeyspaces.size() == Schema.systemKeyspaceNames.size();
     for (KSMetaData ksmd : systemKeyspaces)
-        //把KSMetaData存入keyspaces, CFId(ColumnFamily Id)存入cfIdMap, 方便查找
+        //将每个KSMetaData下面的CFMetaData的UUID存入cfIdMap, KSMetaData存入keyspaces
         Schema.instance.load(ksmd);
 }
+```
+
+Schema类结构
+
+```java
+NonBlockingHashMap<String, KSMetaData> keyspaces; //ksName --> KSMataData
+NonBlockingHashMap<String, Keyspace> keyspaceInstances; //ksName --> Keyspace
+ConcurrentBiMap<Pair<String, String>, UUID> cfIdMap; //Pair<ksName, cfName> --> cfId
 ```
 
 ###Load keyspaces 和 UDFs
@@ -25,7 +32,9 @@ void setup(){
     DatabaseDescriptor.loadSchemas();
     Functions.loadUDFFromSchema();
 }
-/** load keyspace (keyspace) definitions, but do not initialize the keyspace instances. */
+
+//DatabaseDescriptor.loadSchemas
+// load kSMetaData, 同时也初始化Keyspace, 存入Schema.keyspaceInstances
 public static void loadSchemas(){
     Schema.instance.load(DefsTables.loadFromKeyspace());
     Schema.instance.updateVersion();
@@ -35,7 +44,7 @@ DefsTables类中全是静态方法，在loadFromKeyspace中主要关注
 
 * ColumnFamilyStore创建及查询，查询具体细节参考查询一章
 
- 由于创建ColumnFamilyStore是在Keyspace类中执行，需要先初始化Keyspace, 在对每个ColumnFamily创建相应的ColumnFamilyStore
+ 由于创建ColumnFamilyStore是在Keyspace类中执行，需要先初始化Keyspace, 再对每个ColumnFamily创建相应的ColumnFamilyStore
  
  Keyspace类结构
  ```java
@@ -131,7 +140,6 @@ class Memtable{
   }
 }
 
-//View类
 /**
  * An immutable structure holding the current memtable, the memtables pending
  * flush, the sstables for a column family, and the sstables that are active
@@ -274,8 +282,10 @@ void init()
  
  IndexSumary 结构与解释
  
+ ![IndexSumaryDB](images/IndexSummaryDB_Structure.png)
+ 
  Layout of Memory for index summaries:
- 1. A "header" containing the offset into `bytes` of entries in the summary summary data, consisting of one four byte position for each entry in the summary.  This allows us do simple math in getIndex() to find the position in the Memory to start reading the actual index summary entry.  (This is necessary because keys can have different lengths.)
+ 1. A **header** containing the offset into **bytes** of entries in the index summary data, consisting of one four byte position for each entry in the summary.  This allows us do simple math in getIndex() to find the position in the Memory to start reading the actual index summary entry.  (This is necessary because keys can have different lengths.)
  2.  A sequence of (DecoratedKey, position) pairs, where position is the offset into the actual index file.
 
  `RefCountedMemory` 将index key 和 index position(指向Index.db的位置)存储在offheap
@@ -387,15 +397,6 @@ void init()
 
 
 
-
-### config
-
-* `Schema` <br/>
-  ```java
-  NonBlockingHashMap<String, KSMetaData> keyspaces; //ksName --> KSMataData
-  NonBlockingHashMap<String, Keyspace> keyspaceInstances; //ksName --> Keyspace
-  ConcurrentBiMap<Pair<String, String>, UUID> cfIdMap; //Pair<ksName, cfName> --> cfId
-  ```
 
 
 
