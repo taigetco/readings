@@ -4,7 +4,7 @@
 
 ### DatabaseDescritor初始化
 
-读取配置文件, 存储到Config类， 从Config类中读取配置参数, 来初始化部分配置类
+读取cassandra.yaml配置文件, 存储到Config类， 从Config类中读取配置参数, 来初始化部分配置类
 
 重点谈论下DatabaseDescriptor对SystemKeyspace的初始化
 ```java
@@ -181,7 +181,7 @@ void init()
 }
 ```
 
-* 初始化SSTableReader
+* 初始化SSTableReader, 1. 从Statistics.db文件读取validation和stats信息. 2. 检查validation数据. 3. 通过internalOpen函数找到BigTableReader, 执行其构造函数, 实际调用SSTableReader的构造函数. 4. 装载index和filter. 5. 对SSTableReader做validate.
 
  从Directories中得到文件，按照`Set<Map.Entry<Descriptor, Set<Component>>>`存放, 对每个Descriptor对应的Set<Component>打开一个线程来创建SStableReader.
  
@@ -219,6 +219,33 @@ void init()
           sstable.validate();
       return sstable;
   }
+ ```
+ 
+  SSTableRead构造函数, 1. 创建SSTableDeletingTask. 2. 从system.sstable_activity中得到RestorableMeter, 创建ReadMeterSyncTask, 每隔5分钟执行以此更新操作.
+ ```java
+ protected SSTableReader(final Descriptor desc,
+                            Set<Component> components,
+                            CFMetaData metadata,
+                            IPartitioner partitioner,
+                            long maxDataAge,
+                            StatsMetadata sstableMetadata,
+                            OpenReason openReason)
+ {
+     this.rowIndexEntrySerializer = descriptor.version.getSSTableFormat().getIndexSerializer(metadata);
+     deletingTask = new SSTableDeletingTask(this);
+     readMeter = SystemKeyspace.getSSTableReadMeter(desc.ksname, desc.cfname, desc.generation);
+     // sync the average read rate to system.sstable_activity every five minutes, starting one minute from now
+     readMeterSyncFuture = syncExecutor.scheduleAtFixedRate(new Runnable()
+     {
+         public void run()
+         {
+             if (!isCompacted.get())
+             {
+                 meterSyncThrottle.acquire();
+                 SystemKeyspace.persistSSTableReadMeter(desc.ksname, desc.cfname, desc.generation, readMeter);
+             }
+         }
+     }, 1, 5, TimeUnit.MINUTES);
  ```
 
  装载index和filter, 1.从Summary.db读取IndexSumary, 将index entry position和data entry position分别读到ifile和dfile. 2. 如果Summary.db load失败, 创建IndexSummary. 3. 把创建的IndexSummary保存到Summary.db
