@@ -422,9 +422,9 @@ void init()
      return new Murmur3BloomFilter(hash, bitset);
  }
  ```
-   
+ 
  2. 在BloomFilter中对每个Key计算hash值，存入OffHeapBitSet.
-   
+ 
  ```java
  public void add(ByteBuffer key)
  {
